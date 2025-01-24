@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Eternals Search</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="/static/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!-- Navbar with Dark Mode Toggle -->
+    <nav class="navbar navbar-expand-lg navbar-light bg-light">
+        <div class="container">
+            <a class="navbar-brand" href="#">Eternals Search</a>
+            <div class="ms-auto">
+                <button id="themeToggle" class="btn btn-outline-primary">
+                    <i class="bi bi-moon-stars"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <!-- Scanner Configuration Card -->
+        <div class="row mb-4">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">Scan Configuration</h5>
+                    </div>
+                    <div class="card-body">
+                        <form id="scanConfigForm" class="row g-3">
+                            <div class="col-md-12 mb-3">
+                                <div class="btn-group w-100" role="group">
+                                    <input type="radio" class="btn-check" name="scanType" id="countryType" value="country" checked>
+                                    <label class="btn btn-outline-primary" for="countryType">
+                                        Scan by Country
+                                    </label>
+                                    
+                                    <input type="radio" class="btn-check" name="scanType" id="customType" value="custom">
+                                    <label class="btn btn-outline-primary" for="customType">
+                                        Custom IP Ranges
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <div class="col-md-4 d-none" id="customRanges">
+                                <label class="form-label">IP Ranges (one per line)</label>
+                                <textarea id="ipRange" class="form-control" rows="5" 
+                                          placeholder="Example:&#10;192.168.1.0/24&#10;10.0.0.0/8&#10;172.16.0.0/12"></textarea>
+                                <small class="text-muted">Enter IP ranges in CIDR notation</small>
+                            </div>
+                            
+                            <div class="col-md-4" id="countrySelect">
+                                <label class="form-label">Countries</label>
+                                <select id="countryCode" class="form-select" multiple size="5">
+                                    <option value="">Loading countries...</option>
+                                </select>
+                                <small class="text-muted">Hold Ctrl/Cmd to select multiple</small>
+                            </div>
+                            
+                            <div class="col-md-4" id="excludeRanges">
+                                <label class="form-label">Exclude IP Ranges (Optional)</label>
+                                <textarea id="excludeIps" class="form-control" rows="3" 
+                                          placeholder="Ranges to exclude:&#10;192.168.1.0/24&#10;10.0.0.0/8"></textarea>
+                            </div>
+                            
+                            <div class="col-md-4">
+                                <label class="form-label">Port Range</label>
+                                <input type="text" id="portRange" class="form-control" 
+                                       placeholder="80,443,8080-8090" value="1-1000">
+                            </div>
+                            
+                            <div class="col-md-4">
+                                <label class="form-label">Scan Speed</label>
+                                <select id="scanSpeed" class="form-control">
+                                    <option value="slow">Slow (Stealthy)</option>
+                                    <option value="normal" selected>Normal</option>
+                                    <option value="fast">Fast (Aggressive)</option>
+                                </select>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Add preview card after scan configuration -->
+        <div class="card mt-3 d-none" id="previewCard">
+            <div class="card-header">
+                <h5 class="mb-0">Scan Preview</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <h6>IP Ranges:</h6>
+                        <p id="previewRangeCount">0</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h6>Total IPs:</h6>
+                        <p id="previewTotalIps">0</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h6>Estimated Time:</h6>
+                        <p id="previewEstTime">-</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Scanner Status Card -->
+        <div class="row mb-4">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <div>
+                                <h5 class="mb-0">Scanner Status: <span id="scanStatus">Idle</span></h5>
+                                <small id="scanDetails" class="text-muted"></small>
+                            </div>
+                            <div class="btn-group">
+                                <button id="startScanBtn" class="btn btn-primary">Start New Scan</button>
+                                <button id="pauseResumeBtn" class="btn btn-warning d-none">Pause</button>
+                                <button id="stopScanBtn" class="btn btn-danger d-none">Stop</button>
+                            </div>
+                        </div>
+                        <div class="progress" style="height: 20px;">
+                            <div id="scanProgress" class="progress-bar progress-bar-striped progress-bar-animated" 
+                                 role="progressbar" style="width: 0%">0%</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Filter & Export Card -->
+        <div class="row mb-4">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-md-3">
+                                <input type="text" id="ipFilter" class="form-control" 
+                                       placeholder="Filter by IP...">
+                            </div>
+                            <div class="col-md-3">
+                                <select id="portFilter" class="form-control">
+                                    <option value="">All Ports</option>
+                                    <option value="80">HTTP (80)</option>
+                                    <option value="443">HTTPS (443)</option>
+                                    <option value="22">SSH (22)</option>
+                                    <option value="23">Telnet (23)</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <select id="sortBy" class="form-control">
+                                    <option value="timestamp">Sort by Time</option>
+                                    <option value="ip">Sort by IP</option>
+                                    <option value="port">Sort by Port</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="btn-group w-100">
+                                    <button id="refreshBtn" class="btn btn-outline-primary">
+                                        <i class="bi bi-arrow-clockwise"></i> Refresh
+                                    </button>
+                                    <button id="exportCsvBtn" class="btn btn-outline-success">
+                                        <i class="bi bi-download"></i> Export
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Results Tabs -->
+        <div class="row">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-header">
+                        <ul class="nav nav-tabs card-header-tabs">
+                            <li class="nav-item">
+                                <a class="nav-link active" data-bs-toggle="tab" href="#liveResults">
+                                    Live Results
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" data-bs-toggle="tab" href="#scanHistory">
+                                    Scan History
+                                </a>
+                            </li>
+                        </ul>
+                    </div>
+                    <div class="card-body">
+                        <div class="tab-content">
+                            <div class="tab-pane fade show active" id="liveResults">
+                                <div class="table-responsive">
+                                    <table class="table table-hover">
+                                        <thead>
+                                            <tr>
+                                                <th>IP Address</th>
+                                                <th>Port</th>
+                                                <th>Banner</th>
+                                                <th>Last Seen</th>
+                                                <th>Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="devicesList">
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="tab-pane fade" id="scanHistory">
+                                <div id="scanHistoryContent">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Device Detail Modal -->
+    <div class="modal fade" id="deviceModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Device Details</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="deviceDetails">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="rangeInfo" class="text-muted small"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="/static/js/main.js"></script>
+</body>
+</html> 

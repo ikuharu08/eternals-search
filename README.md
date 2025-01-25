@@ -48,7 +48,7 @@ python -c "from database import Database; db = Database(); db.init_db()"
 
 5. Jalankan aplikasi
 ```bash
-uvicorn app:app --reload
+python app.py
 ```
 
 ## 🔧 Konfigurasi

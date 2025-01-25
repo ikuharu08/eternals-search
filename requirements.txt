@@ -1,0 +1,41 @@
+# Web Framework
+fastapi
+uvicorn
+python-multipart
+pydantic
+starlette
+
+# Security
+python-jose
+passlib
+bcrypt
+python-jose[cryptography]
+
+# Database
+aiosqlite
+SQLAlchemy
+
+# Network Tools
+httpx
+asyncio
+aiohttp
+aiodns
+
+# Utils
+python-dateutil
+pytz
+aiofiles
+Pillow
+python-magic
+tqdm
+
+# Testing
+pytest
+pytest-asyncio
+httpx
+pytest-cov
+
+# Development
+black
+flake8
+isort 

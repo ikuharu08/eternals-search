@@ -1,1 +1,1 @@
-{"is_scanning": true, "is_paused": false, "progress": 0, "current_ip": null, "results": [], "current_status": "Scanning 185.55.148.0/22...", "discovered_devices": 0, "scan_start_time": "2025-01-23T12:08:16.259131"}
+{"is_scanning": false, "is_paused": false, "progress": 0, "current_ip": null, "results": [], "current_status": "Scan stopped", "discovered_devices": 0, "scan_start_time": null}

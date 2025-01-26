@@ -10,9 +10,10 @@ import logging
 import ipaddress
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Iterator
 import sqlite3
 from pathlib import Path
+import resource  # Tambahkan import ini di bagian atas
 
 # Buat folder logs jika belum ada
 LOG_DIR = "logs"
@@ -20,6 +21,9 @@ Path(LOG_DIR).mkdir(parents=True, exist_ok=True)
 
 class EternalsSearchScanner:
     def __init__(self):
+        # Set ulimit untuk file descriptors
+        self._set_resource_limits()
+        
         self._is_scanning = False
         self._is_paused = False
         self.current_ip = None
@@ -32,6 +36,19 @@ class EternalsSearchScanner:
         self.logger.setLevel(logging.INFO)
         self.log_file_handler = None
         self.db = Database()
+        self.thread_limit = threading.Semaphore(500)  # Batasi jumlah thread aktif
+
+    def _set_resource_limits(self):
+        """Set resource limits untuk file descriptors"""
+        try:
+            # Dapatkan soft limit dan hard limit saat ini
+            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+            # Set soft limit ke nilai yang lebih tinggi (misal 4096) atau ke hard limit
+            new_soft = min(4096, hard)
+            resource.setrlimit(resource.RLIMIT_NOFILE, (new_soft, hard))
+            self.logger.info(f"Resource limits set to: soft={new_soft}, hard={hard}")
+        except Exception as e:
+            self.logger.warning(f"Failed to set resource limits: {e}")
 
     def _save_status(self):
         """Save scanner status to JSON file"""
@@ -106,32 +123,32 @@ class EternalsSearchScanner:
             self.discovered_devices = []
             self.progress = 0
             self.current_ip = None
-            self.total_ips = 0
             self.completed_ips = 0
+            self.total_ips = self._estimate_total_ips(ip_ranges, exclude_ranges)
             
             # Start logging
             self._start_logging(ip_ranges)
             
-            # Generate IP list
-            ip_list = self._generate_ip_list(ip_ranges, exclude_ranges)
-            self.total_ips = len(ip_list)
+            # Gunakan generator untuk IP list
+            ip_generator = self._generate_ip_generator(ip_ranges, exclude_ranges)
             
-            # Start scanning
             futures = []
-            for i, ip in enumerate(ip_list):
+            for ip in ip_generator:
                 if not self._is_scanning:
                     break
-                    
+                        
                 while self._is_paused:
                     time.sleep(1)  # Tunggu saat pause
                     if not self._is_scanning:  # Check jika stop ditekan saat pause
                         break
-                    
+                        
                 self.current_ip = ip
-                self.progress = int((i + 1) / self.total_ips * 100)
+                self.completed_ips += 1
+                if self.total_ips:
+                    self.progress = int((self.completed_ips) / self.total_ips * 100)
                 
                 # Submit scan task ke thread pool
-                if self._is_scanning and not self._is_paused:  # Double check sebelum submit
+                if self._is_scanning and not self._is_paused:
                     future = self.executor.submit(self._scan_single_ip, ip)
                     futures.append(future)
             
@@ -139,20 +156,15 @@ class EternalsSearchScanner:
             for future in as_completed(futures):
                 if not self._is_scanning:
                     break
-                    
+                        
                 while self._is_paused:
                     time.sleep(1)
                     if not self._is_scanning:
                         break
-                    
-                if self._is_scanning and not self._is_paused:  # Double check sebelum process
-                    try:
-                        ip, open_ports = future.result(timeout=5)  # Tambah timeout
-                        if open_ports:
-                            self._process_scan_result(ip, open_ports)
-                    except Exception as e:
-                        self.logger.error(f"Error processing result: {str(e)}")
-                
+                        
+                if self._is_scanning and not self._is_paused:
+                    self._process_future(future)
+            
         except Exception as e:
             self.logger.error(f"Scan error: {str(e)}")
         finally:
@@ -170,48 +182,48 @@ class EternalsSearchScanner:
                 ports.append(int(part))
         return ports
 
-    def _generate_ip_list(self, ip_ranges: List[str], exclude_ranges: Optional[List[str]]) -> List[str]:
-        ip_list = []
-        for ip_range in ip_ranges:
-            try:
-                network = ipaddress.ip_network(ip_range)
-                ip_list.extend([str(ip) for ip in network])
-            except ValueError:
-                self.logger.warning(f"Invalid IP range: {ip_range}")
-                
+    def _generate_ip_generator(self, ip_ranges: List[str], exclude_ranges: Optional[List[str]] = None) -> Iterator[str]:
+        """Generate IP addresses using a generator to handle large IP ranges."""
+        exclude_ips = set()
         if exclude_ranges:
-            exclude_ips = set()
             for exclude_range in exclude_ranges:
                 try:
                     network = ipaddress.ip_network(exclude_range)
-                    exclude_ips.update([str(ip) for ip in network])
+                    exclude_ips.update(str(ip) for ip in network)
                 except ValueError:
                     self.logger.warning(f"Invalid exclude IP range: {exclude_range}")
-                    
-            ip_list = [ip for ip in ip_list if ip not in exclude_ips]
-            
-        return ip_list
+
+        for ip_range in ip_ranges:
+            try:
+                network = ipaddress.ip_network(ip_range)
+                for ip in network:
+                    ip_str = str(ip)
+                    if ip_str not in exclude_ips:
+                        yield ip_str
+            except ValueError:
+                self.logger.warning(f"Invalid IP range: {ip_range}")
         
     def _scan_single_ip(self, ip: str) -> tuple:
-        if not self._is_scanning:
-            return ip, []
-        try:
-            # Panggil Naabu untuk scan IP
-            open_ports = self._naabu_scan(ip)
+        with self.thread_limit:
+            if not self._is_scanning:
+                return ip, []
+            try:
+                # Panggil Naabu untuk scan IP
+                open_ports = self._naabu_scan(ip)
 
-            # Dapatkan service banner untuk port yang terbuka
-            open_ports_info = []
-            for port in open_ports:
-                service = self._get_service_banner(ip, port)
-                open_ports_info.append({
-                    'port': port,
-                    'service': service
-                })
-            return ip, open_ports_info
+                # Dapatkan service banner untuk port yang terbuka
+                open_ports_info = []
+                for port in open_ports:
+                    service = self._get_service_banner(ip, port)
+                    open_ports_info.append({
+                        'port': port,
+                        'service': service
+                    })
+                return ip, open_ports_info
 
-        except Exception as e:
-            self.logger.error(f"Error scanning {ip}: {str(e)}")
-            return ip, []
+            except Exception as e:
+                self.logger.error(f"Error scanning {ip}: {str(e)}")
+                return ip, []
         
     def _process_scan_result(self, ip: str, open_ports: List[Dict]):
         try:
@@ -565,13 +577,14 @@ class EternalsSearchScanner:
 
     def _naabu_scan(self, ip: str) -> List[int]:
         try:
-            # Run Naabu dengan 500 concurrent threads
+            # Kurangi concurrent threads untuk menghindari too many files
             command = [
                 "naabu",
                 "-host", ip,
-                "-c", "500",  # Set ke 500 threads
+                "-c", "100",  # Kurangi dari 500 ke 100
                 "-json",
-                "-silent"
+                "-silent",
+                "-rate", "100"  # Tambahkan rate limiting
             ]
 
             result = subprocess.run(
@@ -710,3 +723,18 @@ class EternalsSearchScanner:
                 self.logger.removeHandler(file_handler)
                 file_handler.close()
             raise
+
+    def _estimate_total_ips(self, ip_ranges: List[str], exclude_ranges: Optional[List[str]] = None) -> int:
+        total_ips = 0
+        for ip_range in ip_ranges:
+            network = ipaddress.ip_network(ip_range)
+            total_ips += len(network)
+        return total_ips
+
+    def _process_future(self, future):
+        try:
+            ip, open_ports = future.result(timeout=5)
+            if open_ports:
+                self._process_scan_result(ip, open_ports)
+        except Exception as e:
+            self.logger.error(f"Error processing result: {str(e)}")

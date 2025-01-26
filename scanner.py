@@ -40,10 +40,8 @@ class EternalsSearchScanner:
         # Tambahkan rate limit dan batch size
         self.rate_limit = 1000
         self.batch_size = 500
-        # Update proxy configuration untuk ScraperAPI
-        self.scraper_api_key = "59f79d65e9107daec3b98b8b348a00b2"
         self.proxy_config = {
-            "https": f"scraperapi:{self.scraper_api_key}@proxy-server.scraperapi.com:8001"
+            "https": "scraperapi:59f79d65e9107daec3b98b8b348a00b2@proxy-server.scraperapi.com:8001"
         }
         self.max_retries = 3
 

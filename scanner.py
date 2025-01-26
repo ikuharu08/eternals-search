@@ -40,10 +40,11 @@ class EternalsSearchScanner:
         # Tambahkan rate limit dan batch size
         self.rate_limit = 1000
         self.batch_size = 500
-        # Tambahkan atribut untuk proxy
-        self.proxy_url = "https://hide.mn/api/proxylist.txt?maxtime=50&type=hs&out=plain&lang=en&utf"
-        self.proxies = []
-        self.current_proxy_index = 0
+        # Update proxy configuration untuk ScraperAPI
+        self.scraper_api_key = "59f79d65e9107daec3b98b8b348a00b2"
+        self.proxy_config = {
+            "https": f"scraperapi:{self.scraper_api_key}@proxy-server.scraperapi.com:8001"
+        }
         self.max_retries = 3
 
     def _save_status(self):
@@ -201,7 +202,7 @@ class EternalsSearchScanner:
                 self.logger.warning(f"Invalid IP range: {ip_range}")
         
     def _scan_single_ip(self, ip: str) -> tuple:
-        """Scan IP menggunakan Shodan InternetDB dengan proxy rotating"""
+        """Scan IP menggunakan Shodan InternetDB dengan ScraperAPI proxy"""
         with self.thread_limit:
             if not self._is_scanning:
                 return ip, []
@@ -209,12 +210,14 @@ class EternalsSearchScanner:
             retries = 0
             while retries < self.max_retries:
                 try:
-                    proxy = self._get_next_proxy()
-                    proxies = {'http': proxy, 'https': proxy} if proxy else None
-                    
-                    # Gunakan Shodan InternetDB API
+                    # Gunakan ScraperAPI proxy
                     url = f"https://internetdb.shodan.io/{ip}"
-                    response = requests.get(url, proxies=proxies, timeout=10, verify=False)
+                    response = requests.get(
+                        url, 
+                        proxies=self.proxy_config,
+                        timeout=10,
+                        verify=False
+                    )
                     
                     if response.status_code == 200:
                         data = response.json()
@@ -240,7 +243,6 @@ class EternalsSearchScanner:
                         return ip, open_ports_info
                         
                     elif response.status_code == 404:
-                        # IP tidak ditemukan di Shodan
                         return ip, []
                     
                 except requests.exceptions.RequestException as e:

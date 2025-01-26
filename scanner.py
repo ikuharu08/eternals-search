@@ -827,38 +827,14 @@ class EternalsSearchScanner:
             self._save_status()
 
     def _get_proxies(self):
-        """Fetch dan update daftar proxy dari hide.me"""
+        """Membaca daftar proxy dari file 'proxies.txt'"""
         try:
-            headers = {
-                'X-API-Key': self.proxy_api_key,  # Hide.me menggunakan X-API-Key
-                'Accept': 'application/json'
-            }
-            
-            response = requests.get(
-                self.proxy_url,
-                headers=headers,
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                # Format proxy list sesuai response hide.me
-                self.proxies = [
-                    f"{proxy['protocol']}://{proxy['host']}:{proxy['port']}" 
-                    for proxy in data.get('proxies', [])
-                    if proxy['protocol'] in ['http', 'https']
-                ]
-                self.logger.info(f"✨ Berhasil memuat {len(self.proxies)} proxy dari hide.me!")
-                
-            elif response.status_code == 401:
-                self.logger.error("❌ API key hide.me tidak valid atau expired")
-            elif response.status_code == 429:
-                self.logger.error("❌ Rate limit tercapai untuk API hide.me")
-            else:
-                self.logger.error(f"❌ Gagal mengambil daftar proxy: {response.status_code}")
-                
+            with open('proxies.txt', 'r') as f:
+                self.proxies = [line.strip() for line in f if line.strip()]
+            self.logger.info(f"✨ Berhasil memuat {len(self.proxies)} proxy dari 'proxies.txt'!")
         except Exception as e:
-            self.logger.error(f"❌ Error saat mengambil proxy hide.me: {str(e)}")
+            self.logger.error(f"❌ Error saat membaca 'proxies.txt': {str(e)}")
+            self.proxies = []
 
     def _get_next_proxy(self):
         """Dapatkan proxy berikutnya dengan rotasi"""

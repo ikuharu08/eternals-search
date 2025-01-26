@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional, Iterator
 import sqlite3
 from pathlib import Path
-import resource  # Tambahkan import ini di bagian atas
+import requests
 
 # Buat folder logs jika belum ada
 LOG_DIR = "logs"
@@ -21,8 +21,10 @@ Path(LOG_DIR).mkdir(parents=True, exist_ok=True)
 
 class EternalsSearchScanner:
     def __init__(self):
-        # Set ulimit untuk file descriptors
-        self._set_resource_limits()
+        # Inisialisasi logger terlebih dahulu
+        self.logger = logging.getLogger("scanner")
+        self.logger.setLevel(logging.INFO)
+        self.log_file_handler = None
         
         self._is_scanning = False
         self._is_paused = False
@@ -32,23 +34,17 @@ class EternalsSearchScanner:
         self.discovered_devices = []
         self.scan_start_time = None
         self.executor = ThreadPoolExecutor(max_workers=500)
-        self.logger = logging.getLogger("scanner")
-        self.logger.setLevel(logging.INFO)
-        self.log_file_handler = None
         self.db = Database()
         self.thread_limit = threading.Semaphore(500)  # Batasi jumlah thread aktif
-
-    def _set_resource_limits(self):
-        """Set resource limits untuk file descriptors"""
-        try:
-            # Dapatkan soft limit dan hard limit saat ini
-            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-            # Set soft limit ke nilai yang lebih tinggi (misal 4096) atau ke hard limit
-            new_soft = min(4096, hard)
-            resource.setrlimit(resource.RLIMIT_NOFILE, (new_soft, hard))
-            self.logger.info(f"Resource limits set to: soft={new_soft}, hard={hard}")
-        except Exception as e:
-            self.logger.warning(f"Failed to set resource limits: {e}")
+        self._status_file = 'scanner_status.json'  # Atau path ke file status yang sesuai
+        # Tambahkan rate limit dan batch size
+        self.rate_limit = 1000
+        self.batch_size = 500
+        # Tambahkan atribut untuk proxy
+        self.proxy_url = "https://hide.mn/api/proxylist.txt?maxtime=50&type=hs&out=plain&lang=en&utf"
+        self.proxies = []
+        self.current_proxy_index = 0
+        self.max_retries = 3
 
     def _save_status(self):
         """Save scanner status to JSON file"""
@@ -112,6 +108,7 @@ class EternalsSearchScanner:
             pass
 
     def scan_network(self, ip_ranges: List[str], exclude_ranges: Optional[List[str]] = None):
+        self.logger.info("Scan network started")
         try:
             # Buat executor baru setiap kali scan dimulai
             self.executor = ThreadPoolExecutor(max_workers=500)
@@ -204,27 +201,61 @@ class EternalsSearchScanner:
                 self.logger.warning(f"Invalid IP range: {ip_range}")
         
     def _scan_single_ip(self, ip: str) -> tuple:
+        """Scan IP menggunakan Shodan InternetDB dengan proxy rotating"""
         with self.thread_limit:
             if not self._is_scanning:
                 return ip, []
-            try:
-                # Panggil Naabu untuk scan IP
-                open_ports = self._naabu_scan(ip)
+            
+            retries = 0
+            while retries < self.max_retries:
+                try:
+                    proxy = self._get_next_proxy()
+                    proxies = {'http': proxy, 'https': proxy} if proxy else None
+                    
+                    # Gunakan Shodan InternetDB API
+                    url = f"https://internetdb.shodan.io/{ip}"
+                    response = requests.get(url, proxies=proxies, timeout=10, verify=False)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        open_ports_info = []
+                        
+                        # Process ports dan services dari Shodan
+                        for port in data.get('ports', []):
+                            service_info = {
+                                'timestamp': datetime.now().isoformat(),
+                                'ip': ip,
+                                'port': port,
+                                'hostnames': data.get('hostnames', []),
+                                'cpes': data.get('cpes', []),
+                                'vulns': data.get('vulns', []),
+                                'tags': data.get('tags', [])
+                            }
+                            
+                            open_ports_info.append({
+                                'port': port,
+                                'service': json.dumps(service_info)
+                            })
+                        
+                        return ip, open_ports_info
+                        
+                    elif response.status_code == 404:
+                        # IP tidak ditemukan di Shodan
+                        return ip, []
+                    
+                except requests.exceptions.RequestException as e:
+                    self.logger.warning(f"Proxy error untuk {ip}: {str(e)}")
+                    retries += 1
+                    time.sleep(1)
+                    continue
+                
+                except Exception as e:
+                    self.logger.error(f"Error scanning {ip}: {str(e)}")
+                    return ip, []
+                
+            self.logger.error(f"Gagal scan {ip} setelah {self.max_retries} percobaan")
+            return ip, []
 
-                # Dapatkan service banner untuk port yang terbuka
-                open_ports_info = []
-                for port in open_ports:
-                    service = self._get_service_banner(ip, port)
-                    open_ports_info.append({
-                        'port': port,
-                        'service': service
-                    })
-                return ip, open_ports_info
-
-            except Exception as e:
-                self.logger.error(f"Error scanning {ip}: {str(e)}")
-                return ip, []
-        
     def _process_scan_result(self, ip: str, open_ports: List[Dict]):
         try:
             with sqlite3.connect(self.db.db_name) as conn:
@@ -429,11 +460,13 @@ class EternalsSearchScanner:
         self._is_scanning = value
         self._save_status()
 
-    def start_scan(self, ip_ranges, ports, exclude_ranges=None):
+    def start_scan(self, ip_ranges, exclude_ranges=None):
         """Start scanning process"""
         if self.is_scanning:
+            self.logger.info("Scan is already running")
             return False
         
+        self.logger.info("Starting scan...")
         # Reset status
         self.progress = 0
         self.current_ip = None
@@ -445,8 +478,8 @@ class EternalsSearchScanner:
         
         # Start scan thread
         scan_thread = threading.Thread(
-            target=self._scan_worker,
-            args=(ip_ranges, ports, exclude_ranges)
+            target=self.scan_network,
+            args=(ip_ranges, exclude_ranges)
         )
         scan_thread.daemon = True
         scan_thread.start()
@@ -486,6 +519,7 @@ class EternalsSearchScanner:
                 # Scan each port
                 open_ports = []
                 for port in ports:
+                    self.semaphore.acquire()
                     try:
                         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         sock.settimeout(1)  # 1 second timeout
@@ -634,6 +668,7 @@ class EternalsSearchScanner:
         return self._is_scanning
 
     def scan_single_device(self, ip: str, port: int) -> dict:
+        """Scan single device menggunakan Shodan InternetDB"""
         try:
             # Setup logging untuk single device scan
             log_filename = f"{LOG_DIR}/single_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
@@ -646,89 +681,83 @@ class EternalsSearchScanner:
             file_handler.setFormatter(formatter)
             self.logger.addHandler(file_handler)
             
-            self.logger.info(f"Starting single device scan for {ip}:{port}")
+            self.logger.info(f"Starting single device scan for {ip}")
             
-            # Gunakan naabu untuk scan port
-            command = [
-                "naabu",
-                "-host", ip,
-                "-p", str(port),  # Scan port spesifik
-                "-c", "500",
-                "-json",
-                "-silent"
-            ]
-
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True
-            )
-
-            # Parse output naabu
-            port_open = False
-            for line in result.stdout.strip().split('\n'):
-                if line:
-                    try:
-                        scan_result = json.loads(line)
-                        if 'port' in scan_result and scan_result['port'] == port:
-                            port_open = True
-                            break
-                    except json.JSONDecodeError:
-                        continue
-
-            if port_open:
-                self.logger.info(f"Port {port} is open on {ip}")
-                # Gunakan httpx untuk grab banner
-                service = self._get_service_banner(ip, port)
-                result = {
-                    'ip': ip,
-                    'port': port,
-                    'banner': service,
-                    'timestamp': datetime.now().isoformat()
-                }
-
-                # Simpan ke database jika ada banner
-                if service:
-                    with sqlite3.connect(self.db.db_name) as conn:
-                        c = conn.cursor()
-                        c.execute('''
-                            INSERT INTO devices (ip, port, banner, timestamp)
-                            VALUES (?, ?, ?, datetime('now'))
-                            ON CONFLICT(ip, port) DO UPDATE SET
-                                banner = excluded.banner,
-                                timestamp = datetime('now')
-                        ''', (ip, port, service))
-                        conn.commit()
-                    self.logger.info(f"Saved to database: {ip}:{port} - {service}")
-            else:
-                self.logger.info(f"Port {port} is closed on {ip}")
-                result = {
-                    'ip': ip,
-                    'port': port,
-                    'banner': None,
-                    'timestamp': datetime.now().isoformat()
-                }
-
-            self.logger.info(f"Scan completed for {ip}:{port}")
+            retries = 0
+            while retries < self.max_retries:
+                try:
+                    proxy = self._get_next_proxy()
+                    proxies = {'http': proxy, 'https': proxy} if proxy else None
+                    
+                    url = f"https://internetdb.shodan.io/{ip}"
+                    response = requests.get(url, proxies=proxies, timeout=15, verify=False)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        ports = data.get('ports', [])
+                        
+                        if port in ports:
+                            service_info = {
+                                'timestamp': datetime.now().isoformat(),
+                                'ip': ip,
+                                'port': port,
+                                'hostnames': data.get('hostnames', []),
+                                'cpes': data.get('cpes', []),
+                                'vulns': data.get('vulns', []),
+                                'tags': data.get('tags', [])
+                            }
+                            
+                            # Save to database
+                            with sqlite3.connect(self.db.db_name) as conn:
+                                c = conn.cursor()
+                                c.execute('''
+                                    INSERT INTO devices (ip, port, banner, timestamp)
+                                    VALUES (?, ?, ?, datetime('now'))
+                                    ON CONFLICT(ip, port) DO UPDATE SET
+                                        banner = excluded.banner,
+                                        timestamp = datetime('now')
+                                ''', (ip, port, json.dumps(service_info)))
+                                conn.commit()
+                                
+                            self.logger.info(f"Port {port} is open on {ip}")
+                            return service_info
+                        else:
+                            self.logger.info(f"Port {port} is not open on {ip}")
+                            return None
+                            
+                    elif response.status_code == 404:
+                        self.logger.info(f"No information found for {ip}")
+                        return None
+                        
+                except requests.exceptions.RequestException as e:
+                    self.logger.warning(f"Proxy error: {str(e)}")
+                    retries += 1
+                    time.sleep(1)
+                    continue
+                    
+                except Exception as e:
+                    self.logger.error(f"Error scanning {ip}: {str(e)}")
+                    return None
+                    
+            self.logger.error(f"Failed to scan {ip} after {self.max_retries} retries")
+            return None
             
-            # Cleanup logging
-            self.logger.removeHandler(file_handler)
-            file_handler.close()
-            
-            return result
-
         except Exception as e:
-            self.logger.error(f"Error scanning {ip}:{port}: {str(e)}")
+            self.logger.error(f"Error in scan_single_device: {str(e)}")
             if 'file_handler' in locals():
                 self.logger.removeHandler(file_handler)
                 file_handler.close()
             raise
+        finally:
+            if 'file_handler' in locals():
+                self.logger.removeHandler(file_handler)
+                file_handler.close()
 
     def _estimate_total_ips(self, ip_ranges: List[str], exclude_ranges: Optional[List[str]] = None) -> int:
         total_ips = 0
         for ip_range in ip_ranges:
             network = ipaddress.ip_network(ip_range)
-            total_ips += len(network)
+            total_ips += network.num_addresses  # Menggunakan num_addresses
         return total_ips
 
     def _process_future(self, future):
@@ -738,3 +767,106 @@ class EternalsSearchScanner:
                 self._process_scan_result(ip, open_ports)
         except Exception as e:
             self.logger.error(f"Error processing result: {str(e)}")
+
+    def _increase_file_limit(self):
+        """Increase system file limit"""
+        try:
+            import resource
+            resource.setrlimit(resource.RLIMIT_NOFILE, (65535, 65535))
+        except Exception as e:
+            self.logger.warning(f"Failed to increase file limit: {e}")
+
+    def _scan_ip_batch(self, ip_batch: List[str]) -> None:
+        """Scan a batch of IPs"""
+        try:
+            with self.thread_limit:
+                # Convert IPs to string format naabu expects
+                ip_list = ','.join(ip_batch)
+                
+                # Run naabu with rate limit
+                cmd = f"naabu -l {ip_list} -p {self.ports} -rate {self.rate_limit}"
+                result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                
+                if result.returncode == 0:
+                    # Process results
+                    self._process_scan_results(result.stdout)
+                else:
+                    self.logger.error(f"Scan failed for batch: {result.stderr}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error scanning batch: {e}")
+
+    def start_scan(self, target_ips: List[str]) -> None:
+        """Start scanning with batching"""
+        try:
+            self._increase_file_limit()
+            self._is_scanning = True
+            self.scan_start_time = datetime.now()
+            
+            # Split IPs into batches
+            ip_batches = [target_ips[i:i + self.batch_size] 
+                         for i in range(0, len(target_ips), self.batch_size)]
+            
+            total_batches = len(ip_batches)
+            
+            for i, batch in enumerate(ip_batches, 1):
+                if self._is_paused:
+                    self.logger.info("Scan paused")
+                    break
+                    
+                self._scan_ip_batch(batch)
+                self.progress = (i / total_batches) * 100
+                self._save_status()
+                
+            self._is_scanning = False
+            self._save_status()
+            
+        except Exception as e:
+            self.logger.error(f"Scan error: {e}")
+            self._is_scanning = False
+            self._save_status()
+
+    def _get_proxies(self):
+        """Fetch dan update daftar proxy dari hide.me"""
+        try:
+            headers = {
+                'X-API-Key': self.proxy_api_key,  # Hide.me menggunakan X-API-Key
+                'Accept': 'application/json'
+            }
+            
+            response = requests.get(
+                self.proxy_url,
+                headers=headers,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                # Format proxy list sesuai response hide.me
+                self.proxies = [
+                    f"{proxy['protocol']}://{proxy['host']}:{proxy['port']}" 
+                    for proxy in data.get('proxies', [])
+                    if proxy['protocol'] in ['http', 'https']
+                ]
+                self.logger.info(f"✨ Berhasil memuat {len(self.proxies)} proxy dari hide.me!")
+                
+            elif response.status_code == 401:
+                self.logger.error("❌ API key hide.me tidak valid atau expired")
+            elif response.status_code == 429:
+                self.logger.error("❌ Rate limit tercapai untuk API hide.me")
+            else:
+                self.logger.error(f"❌ Gagal mengambil daftar proxy: {response.status_code}")
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error saat mengambil proxy hide.me: {str(e)}")
+
+    def _get_next_proxy(self):
+        """Dapatkan proxy berikutnya dengan rotasi"""
+        if not self.proxies:
+            self._get_proxies()
+        
+        if self.proxies:
+            proxy = self.proxies[self.current_proxy_index]
+            self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxies)
+            return proxy
+        return None

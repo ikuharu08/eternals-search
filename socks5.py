@@ -41,8 +41,16 @@ class SOCKS5Server:
                 client_socket.close()
                 return
 
-            # Lanjutkan proses autentikasi...
-            # ... kode lainnya ...
+            # Lakukan autentikasi
+            if not self._handle_auth(client_socket):
+                client_socket.close()
+                return
+
+            # Tangani permintaan client
+            if not self._handle_request(client_socket):
+                client_socket.close()
+                return
+
         except Exception as e:
             logging.error(f"Error handling client: {str(e)}")
             client_socket.close()
@@ -50,104 +58,66 @@ class SOCKS5Server:
     def _handle_auth(self, client_socket):
         """Handle SOCKS5 authentication"""
         try:
-            # Receive auth methods
-            header = client_socket.recv(2)
-            if len(header) < 2:
-                logging.error("Failed to receive auth header")
-                return False
-                
-            version, nmethods = header[0], header[1]
-            
-            # Check SOCKS version
-            if version != self.SOCKS_VERSION:
-                logging.error("Invalid SOCKS version")
-                return False
-                
-            # Get available methods
-            methods = self._get_available_methods(nmethods, client_socket)
-            if not methods:
-                return False
-            
-            # Accept only no authentication for now
-            if 0 not in methods:
-                logging.error("No acceptable authentication method")
-                client_socket.send(bytes([self.SOCKS_VERSION, 255]))
-                return False
-                
-            # Send no authentication required
-            client_socket.send(bytes([self.SOCKS_VERSION, 0]))
+            # Mengirimkan respons bahwa tidak diperlukan autentikasi
+            client_socket.sendall(bytes([self.SOCKS_VERSION, 0]))
             return True
-            
         except Exception as e:
             logging.error(f"Authentication error: {str(e)}")
             return False
 
-    def _get_available_methods(self, nmethods, client_socket):
-        methods = []
-        try:
-            for i in range(nmethods):
-                method = client_socket.recv(1)
-                if not method:
-                    logging.error("Failed to receive auth methods")
-                    return []
-                methods.append(method[0])
-            return methods
-        except Exception as e:
-            logging.error(f"Error receiving methods: {str(e)}")
-            return []
-
     def _handle_request(self, client_socket):
+        """Handle SOCKS5 client request"""
         try:
-            # Receive request header
-            header = client_socket.recv(4)
-            if len(header) < 4:
+            # Menerima header permintaan (4 byte)
+            header = self._recvall(client_socket, 4)
+            if not header:
                 logging.error("Failed to receive request header")
                 return False
-                
+
             version, cmd, _, address_type = header
-            
+
             if version != self.SOCKS_VERSION:
+                logging.error("Invalid SOCKS version in request")
                 return False
-                
-            if cmd != 1:  # Only support CONNECT
+
+            if cmd != 1:
                 logging.error("Unsupported command")
                 self._send_reply(client_socket, 7)
                 return False
 
+            # Menangani alamat tujuan berdasarkan tipe
             if address_type == 1:  # IPv4
-                address = socket.inet_ntoa(client_socket.recv(4))
+                addr = self._recvall(client_socket, 4)
+                address = socket.inet_ntoa(addr)
             elif address_type == 3:  # Domain name
-                domain_length = client_socket.recv(1)[0]
-                address = client_socket.recv(domain_length).decode()
+                domain_length = self._recvall(client_socket, 1)[0]
+                domain = self._recvall(client_socket, domain_length)
+                address = domain.decode()
             else:
                 logging.error("Unsupported address type")
                 self._send_reply(client_socket, 8)
                 return False
 
-            # Get port
-            port = int.from_bytes(client_socket.recv(2), 'big')
-            
-            try:
-                # Connect to destination
-                remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                remote.connect((address, port))
-                bind_address = remote.getsockname()
-                logging.info(f"Connected to {address}:{port}")
-                
-                # Send success reply
-                self._send_reply(client_socket, 0, bind_address)
-                
-            except Exception as e:
-                logging.error(f"Connection error: {str(e)}")
-                self._send_reply(client_socket, 4)
-                return False
+            # Menerima port tujuan
+            port_bytes = self._recvall(client_socket, 2)
+            port = int.from_bytes(port_bytes, 'big')
 
-            # Start forwarding data
+            # Mencoba terhubung ke server tujuan
+            remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            remote.connect((address, port))
+            logging.info(f"Connected to {address}:{port}")
+
+            # Mengirimkan respons sukses ke client
+            bind_address = remote.getsockname()
+            self._send_reply(client_socket, 0, bind_address)
+
+            # Meneruskan data antara client dan server tujuan
             self._forward_data(client_socket, remote)
             return True
-            
+
         except Exception as e:
-            logging.error(f"Request error: {str(e)}")
+            logging.error(f"Request handling error: {str(e)}")
+            self._send_reply(client_socket, 1)
             return False
 
     def _send_reply(self, client_socket, reply_code, bind_address=None):

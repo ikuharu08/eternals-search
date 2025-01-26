@@ -35,7 +35,12 @@ class SOCKS5Server:
         """Handle SOCKS5 authentication"""
         try:
             # Receive auth methods
-            version, nmethods = client_socket.recv(2)
+            header = client_socket.recv(2)
+            if len(header) < 2:
+                logging.error("Failed to receive auth header")
+                return False
+                
+            version, nmethods = header[0], header[1]
             
             # Check SOCKS version
             if version != self.SOCKS_VERSION:
@@ -44,6 +49,8 @@ class SOCKS5Server:
                 
             # Get available methods
             methods = self._get_available_methods(nmethods, client_socket)
+            if not methods:
+                return False
             
             # Accept only no authentication for now
             if 0 not in methods:
@@ -61,13 +68,27 @@ class SOCKS5Server:
 
     def _get_available_methods(self, nmethods, client_socket):
         methods = []
-        for i in range(nmethods):
-            methods.append(ord(client_socket.recv(1)))
-        return methods
+        try:
+            for i in range(nmethods):
+                method = client_socket.recv(1)
+                if not method:
+                    logging.error("Failed to receive auth methods")
+                    return []
+                methods.append(method[0])
+            return methods
+        except Exception as e:
+            logging.error(f"Error receiving methods: {str(e)}")
+            return []
 
     def _handle_request(self, client_socket):
         try:
-            version, cmd, _, address_type = client_socket.recv(4)
+            # Receive request header
+            header = client_socket.recv(4)
+            if len(header) < 4:
+                logging.error("Failed to receive request header")
+                return False
+                
+            version, cmd, _, address_type = header
             
             if version != self.SOCKS_VERSION:
                 return False

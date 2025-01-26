@@ -19,14 +19,30 @@ class SOCKS5Server:
 
     def handle_client(self, client_socket):
         try:
-            # Authentication handling
-            if not self._handle_auth(client_socket):
+            # Menerima header (2 byte)
+            header = self._recvall(client_socket, 2)
+            if not header:
+                logging.error("Failed to receive header")
+                client_socket.close()
                 return
-            
-            # Get request details
-            if not self._handle_request(client_socket):
+
+            version, nmethods = header[0], header[1]
+
+            # Pastikan versi SOCKS sesuai
+            if version != self.SOCKS_VERSION:
+                logging.error("Invalid SOCKS version")
+                client_socket.close()
                 return
-            
+
+            # Menerima daftar metode autentikasi
+            methods = self._recvall(client_socket, nmethods)
+            if not methods:
+                logging.error("Failed to receive authentication methods")
+                client_socket.close()
+                return
+
+            # Lanjutkan proses autentikasi...
+            # ... kode lainnya ...
         except Exception as e:
             logging.error(f"Error handling client: {str(e)}")
             client_socket.close()
@@ -196,6 +212,16 @@ class SOCKS5Server:
             logging.error(f"Server error: {str(e)}")
             server.close()
             sys.exit(1)
+
+    def _recvall(self, sock, n):
+        """Menerima tepat n byte data dari socket"""
+        data = b''
+        while len(data) < n:
+            packet = sock.recv(n - len(data))
+            if not packet:
+                return None
+            data += packet
+        return data
 
 if __name__ == "__main__":
     server = SOCKS5Server()
